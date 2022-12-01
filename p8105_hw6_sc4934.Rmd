@@ -5,7 +5,7 @@ date: "2022-12-01"
 output: github_document
 ---
 
-```{r setup, include=FALSE}
+```{r setup, results = "hide", message = FALSE, include=FALSE}
 library(tidyverse)
 library(p8105.datasets)
 library(viridis)
@@ -31,12 +31,20 @@ theme_set(theme_minimal() + theme(legend.position = "bottom"))
 ```
 
 
+```{r results = "hide"}
+library(tidyverse)
+library(p8105.datasets)
+library(viridis)
+library(rvest)
+```
+
+# Problem 1
 
 # Problem 2
 
 ## import and tidy
 
-```{r}
+```{r results = "hide", message=FALSE}
 homicide = 
 read_csv(
   "data/homicide-data.csv"
@@ -52,4 +60,30 @@ read_csv(
   
 ```
 
+
+## Regression 
+
+```{r results = "hide", message = FALSE}
+baltimore = homicide %>% 
+  filter(city_state == "Baltimore, MD")
+
+fit_logistic = 
+  baltimore %>% 
+  glm(solved ~ victim_age + victim_race + victim_sex, data = ., family = binomial()) 
+
+fit_logistic %>% 
+  broom::tidy() %>% 
+  mutate(OR = exp(estimate)) %>% 
+  select(term, estimate, OR, p.value) %>% 
+  knitr::kable(digits = 3) 
+
+exp(confint(fit_logistic))
+
+```
+
+The estimate is -1.037. 
+The adjsuted odds ratio is 0.355, and the confidence interval is (0.267, 0.468). 
+
+Homicides in which the victim is Male are substantially less likely to be resolved compared 
+to homicides in which the victim is female, keeping all other variables fixed.  
 
