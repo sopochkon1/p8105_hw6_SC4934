@@ -9,7 +9,8 @@ output: github_document
 library(tidyverse)
 library(p8105.datasets)
 library(viridis)
-library(rvest)
+library(modelr)
+library(ggplot2)
 
 knitr::opts_chunk$set(
 	echo = TRUE,
@@ -35,10 +36,43 @@ theme_set(theme_minimal() + theme(legend.position = "bottom"))
 library(tidyverse)
 library(p8105.datasets)
 library(viridis)
-library(rvest)
+library(modelr)
+library(ggplot2)
 ```
 
 # Problem 1
+
+```{r}
+weather_df = 
+  rnoaa::meteo_pull_monitors(
+    c("USW00094728"),
+    var = c("PRCP", "TMIN", "TMAX"), 
+    date_min = "2017-01-01",
+    date_max = "2017-12-31") %>%
+  mutate(
+    name = recode(id, USW00094728 = "CentralPark_NY"),
+    tmin = tmin / 10,
+    tmax = tmax / 10) %>%
+  select(name, id, everything())
+```
+
+
+```{r}
+weather_df %>% 
+  modelr::bootstrap(n = 5000) %>% 
+  mutate(
+    models = map(strap, ~lm(tmax ~ tmin, data = .x) ),
+    results = map(models, broom::glance)) %>% 
+  select(-strap, -models) %>% 
+  unnest(results) %>% 
+  ggplot(aes(x = r.squared)) + geom_density()
+```
+
+
+
+
+
+
 
 # Problem 2
 
@@ -51,14 +85,14 @@ read_csv(
 ) %>% 
   janitor::clean_names() %>% 
   mutate(
-    state = case_when(city == "Tulsa" ~ "OK", TRUE ~ as.character(state)),
     city_state = str_c(city, ", ", state),
-    solved = case_when(disposition == "Closed by arrest" | disposition == "Closed without arrest" ~                        1, disposition == "Open/No arrest" ~ 0 ),
+    solved = case_when(disposition == "Closed by arrest"  ~ 1, disposition == "Open/No arrest" | disposition == "Closed without arrest" ~ 0 ),
     victim_age = as.integer(victim_age)) %>% 
-  subset(city_state != "Dallas, TX" & city_state != "Phoenix, AZ" & city_state != "Kansas City, MO") %>% 
+  subset(city_state != "Tulsa, AL", city_state != "Dallas, TX" & city_state != "Phoenix, AZ" & city_state != "Kansas City, MO") %>% 
   filter(victim_race %in% c("White", "Black"))
   
 ```
+
 
 
 ## Regression 
@@ -74,16 +108,61 @@ fit_logistic =
 fit_logistic %>% 
   broom::tidy() %>% 
   mutate(OR = exp(estimate)) %>% 
-  select(term, estimate, OR, p.value) %>% 
+  select(term, OR, p.value) %>% 
   knitr::kable(digits = 3) 
 
 exp(confint(fit_logistic))
 
 ```
 
-The estimate is -1.037. 
-The adjsuted odds ratio is 0.355, and the confidence interval is (0.267, 0.468). 
+
+The adjsuted odds ratio is 0.426, and the confidence interval is (0.324, 0.557). 
 
 Homicides in which the victim is Male are substantially less likely to be resolved compared 
 to homicides in which the victim is female, keeping all other variables fixed.  
+
+## Each city Regression
+
+```{r}
+
+city_logistic = 
+  homicide %>% 
+  nest(data = -city_state) %>% 
+  mutate(
+    results = map(data, ~ glm(solved ~ victim_age + victim_race + victim_sex, data = ., family = binomial())), 
+    results = map(results, broom::tidy, conf.int = TRUE)
+  ) %>% 
+  select(city_state, results) %>% 
+  unnest(cols = results) %>% 
+  mutate(OR = exp(estimate),
+         conf.low = exp(conf.low),
+         conf.high = exp(conf.high)) %>% 
+  select(city_state, term, OR, conf.low, conf.high)
+
+```
+
+## Plot 
+
+```{r}
+city_logistic %>% 
+  filter(term == "victim_sexMale") %>% 
+  mutate(city_state = fct_reorder(city_state, OR)) %>% 
+  ggplot(aes(x = city_state, y = OR, color = city_state)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = as.numeric(conf.low), ymax = as.numeric(conf.high))) +
+  labs(
+    x = "City, State",
+    y = "OR (CI)",
+    title = "OR and CI for each City"
+  ) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  theme(legend.position = "none")
+```
+
+
+# Problem 3
+
+
+
+
 
