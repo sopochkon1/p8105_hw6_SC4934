@@ -11,6 +11,8 @@ library(p8105.datasets)
 library(viridis)
 library(modelr)
 library(ggplot2)
+library(mgcv)
+
 
 knitr::opts_chunk$set(
 	echo = TRUE,
@@ -31,18 +33,8 @@ scale_fill_discrete = scale_fill_viridis_d
 theme_set(theme_minimal() + theme(legend.position = "bottom"))
 ```
 
-
-```{r results = "hide"}
-library(tidyverse)
-library(p8105.datasets)
-library(viridis)
-library(modelr)
-library(ggplot2)
-```
-
 # Problem 1
-
-```{r}
+```{r results = "hide", message=FALSE}
 weather_df = 
   rnoaa::meteo_pull_monitors(
     c("USW00094728"),
@@ -56,8 +48,9 @@ weather_df =
   select(name, id, everything())
 ```
 
-
 ```{r}
+set.seed(1)
+
 weather_df %>% 
   modelr::bootstrap(n = 5000) %>% 
   mutate(
@@ -68,11 +61,30 @@ weather_df %>%
   ggplot(aes(x = r.squared)) + geom_density()
 ```
 
+In this example, the $\hat{r}^2$ value is high (around 45), and the upper bound at 1 may be a cause for the generally skewed shape of the distribution. 
+
+the 2.5% and 97.5% quantiles of the estimates across the samples would allow us to construct confidence intervals for $R^2$. As the shape is asymmetric, using the mean +/- 1.96 times the standard error wouldn't work. 
 
 
 
+```{r}
+weather_df %>% 
+  modelr::bootstrap(n = 5000) %>% 
+  mutate(
+    models = map(strap, ~lm(tmax ~ tmin, data = .x) ),
+    results = map(models, broom::tidy)) %>% 
+  select(-strap, -models) %>% 
+  unnest(results) %>% 
+  select(id = `.id`, term, estimate) %>% 
+  pivot_wider(
+    names_from = term, 
+    values_from = estimate) %>% 
+  rename(beta0 = `(Intercept)`, beta1 = tmin) %>% 
+  mutate(log_b0b1 = log(beta0 * beta1)) %>% 
+  ggplot(aes(x = log_b0b1)) + geom_density()
+```
 
-
+this distribution is also slightly skewed. 
 
 # Problem 2
 
@@ -94,10 +106,9 @@ read_csv(
 ```
 
 
-
 ## Regression 
 
-```{r results = "hide", message = FALSE}
+```{r message = FALSE}
 baltimore = homicide %>% 
   filter(city_state == "Baltimore, MD")
 
@@ -107,16 +118,17 @@ fit_logistic =
 
 fit_logistic %>% 
   broom::tidy() %>% 
-  mutate(OR = exp(estimate)) %>% 
-  select(term, OR, p.value) %>% 
+  mutate(OR = exp(estimate),
+         conf.low = exp(estimate - 1.96*std.error),
+         conf.high = exp(estimate + 1.96*std.error)) %>% 
+  select(term, OR, conf.low, conf.high) %>% 
   knitr::kable(digits = 3) 
 
-exp(confint(fit_logistic))
 
 ```
 
 
-The adjsuted odds ratio is 0.426, and the confidence interval is (0.324, 0.557). 
+The adjusted odds ratio is 0.426, and the confidence interval is (0.325, 0.558). 
 
 Homicides in which the victim is Male are substantially less likely to be resolved compared 
 to homicides in which the victim is female, keeping all other variables fixed.  
@@ -159,10 +171,87 @@ city_logistic %>%
   theme(legend.position = "none")
 ```
 
+The plot above shows the estimated odds ratio for solving homicides comparing male victims to female victims, along with the confidence intervals, for each city in the data set. The odds ratios are arranged in an increasing trend, with New York, NY having the lowest and Albuquerque, NM having the highest. 
+Furthermore, for the cities that have an odds ratio less than 1 (and significant, meaning the confidence interval does not include the null value), homicides in which the victim is Male are less likely to be resolved compared to homicides in which the victim is female, while for the cities that have an odds ratio more than one (and significant), homicides in which the victim in Male are more likely to be resolved compared to homicides in which the victim is female, holding  other variables constant. 
 
 # Problem 3
 
+## import and tidy
+
+```{r message=FALSE}
+birthweight = 
+read_csv(
+  "data/birthweight.csv"
+) %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    babysex = as.factor(ifelse(babysex == 1, "Male", "Female")),
+    mrace = as.factor(case_when(mrace == 1 ~ "White", mrace == 2 ~ "Black", mrace == 3 ~ "Asian",      mrace == 4 ~ "Puerto Rican", mrace == 8 ~ "Other")),
+    malform = as.factor(ifelse(malform == 1, "Present", "Absent")))
+
+```
 
 
 
+## Regression 
+```{r}
+model1 = 
+  birthweight %>% 
+  lm(bwt ~ gaweeks, data = .)
 
+
+birthweight %>% 
+  modelr::add_residuals(model1) %>% 
+  modelr::add_predictions(model1) %>% 
+  ggplot(aes(x = pred, y = resid)) + geom_violin() + 
+  labs(
+    title = "Model 1 Residuals",
+    x = "Predicted",
+    y = "Residuals"
+  )
+```
+ 
+The regression model `model1`  examines birthweight as outcome (`bwt`), and gestational age in weeks `gaweeks` as a predictor, as low gestational age is hypothesized to be linked to low birth weight. As the outcome is a continuous variable, I used a linear model `lm`. 
+ 
+ 
+## Comparison
+ 
+```{r}
+model_df = 
+  crossv_mc(birthweight, 100) %>% 
+  mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble))
+
+model_df = 
+  model_df %>% 
+  mutate(
+    model1 = map(train, ~ lm(bwt ~ gaweeks, data = .)),
+    model2 = map(train, ~ lm(bwt ~ blength + gaweeks, data = .)),
+    model3 = map(train, ~ lm(bwt ~  bhead + blength + babysex + bhead*blength + blength*babysex +
+                               bhead*babysex + bhead*blength*babysex, data = . ))) %>% 
+    mutate(
+      rmse_model1 = map2_dbl(model1, test, ~rmse(model = .x, data = .y)),
+      rmse_model2 = map2_dbl(model2, test, ~rmse(model = .x, data = .y)),
+      rmse_model3 = map2_dbl(model3, test, ~rmse(model = .x, data = .y)))
+    
+model_df %>% 
+  select(starts_with("rmse")) %>% 
+  pivot_longer(
+    everything(),
+    names_to = "model", 
+    values_to = "rmse",
+    names_prefix = "rmse_") %>% 
+  mutate(model = fct_inorder(model)) %>% 
+  ggplot(aes(x = model, y = rmse)) + geom_violin() +
+  labs(
+    title = "Model Comparison",
+    x = "Models",
+    y = "RMSE"
+  )
+
+```
+ 
+ Model 3 had the lowest rmse (around 280), while model 1 had the highest rmse (around 480). This shows that model 3 was best fit out of the models. 
+ 
+ 
